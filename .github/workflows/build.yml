@@ -1,4 +1,4 @@
-name: Build LunairOS
+name: Build ShinyOS
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
         run: |
           curl -H "Content-Type: application/json" \
             -X POST \
-            -d "{\"content\":\"🚀 Build da LunairOS iniciada!\nRepo: $GITHUB_REPOSITORY\nCommit: $GITHUB_SHA\"}" \
+            -d "{\"content\":\"🚀 Build da ShinyOS iniciada!\nRepo: $GITHUB_REPOSITORY\nCommit: $GITHUB_SHA\"}" \
             "$DISCORD_WEBHOOK_URL"
 
       - name: Checkout repository
@@ -36,7 +36,7 @@ jobs:
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LunairOS-Turmoil-0.1.1
+          name: ShinyOS-Glimmer-0.2.0
           path: build/*.iso
 
       - name: Notify Discord (finish)
@@ -47,10 +47,10 @@ jobs:
         run: |
           if [ "$STATUS" = "success" ]; then
             EMOJI="✅"
-            MSG="Build da LunairOS concluída com sucesso!"
+            MSG="Build da ShinyOS concluída com sucesso!"
           else
             EMOJI="❌"
-            MSG="Build da LunairOS falhou."
+            MSG="Build da ShinyOS falhou."
           fi
 
           curl -H "Content-Type: application/json" \

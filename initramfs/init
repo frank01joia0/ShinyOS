@@ -1,14 +1,97 @@
-#!/bin/busybox sh
+#!/bin/sh
+# ShinyOS — /init da initramfs
+#
+# Sem "root=" na linha de comando do kernel: modo live, o sistema inteiro
+# roda da própria initramfs (na RAM).
+# Com "root=UUID=...", "root=LABEL=..." ou "root=/dev/xxx": monta essa
+# partição e passa o controle para o sistema instalado com switch_root.
 
-mount -t proc none /proc
-mount -t sysfs none /sys
-mount -t devtmpfs none /dev 2>/dev/null || true
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 
-clear
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
-/libexec/lunairos/hasinit
-rm -f /libexec/lunairos/hasinit
+root=
+rootfstype=ext4
+rootflags=rw
+rootdelay=15
+init=/sbin/init
+for arg in $(cat /proc/cmdline); do
+    case $arg in
+        root=*)       root=${arg#root=} ;;
+        rootfstype=*) rootfstype=${arg#rootfstype=} ;;
+        rootflags=*)  rootflags=${arg#rootflags=} ;;
+        rootdelay=*)  rootdelay=${arg#rootdelay=} ;;
+        init=*)       init=${arg#init=} ;;
+        shiny.rescue) exec setsid cttyhack /bin/sh ;;
+    esac
+done
 
-echo "lunairos" > /proc/sys/kernel/hostname 2>/dev/null || true
+rescue() {
+    echo
+    echo "[ShinyOS] $*"
+    echo "[ShinyOS] Abrindo shell de resgate. Digite 'exit' para tentar de novo."
+    setsid cttyhack /bin/sh
+}
 
-exec setsid cttyhack /bin/sh
+if [ -z "$root" ]; then
+    # Modo live: o /sbin/init (BusyBox) assume daqui, lendo /etc/inittab
+    umount /proc /sys 2>/dev/null
+    exec /sbin/init
+fi
+
+while :; do
+    dev=
+    i=0
+    while [ $i -lt $((rootdelay * 2)) ]; do
+        case $root in
+            UUID=*|LABEL=*) dev=$(findfs "$root" 2>/dev/null) ;;
+            *)              [ -b "$root" ] && dev=$root ;;
+        esac
+        [ -n "$dev" ] && break
+        [ $i -eq 2 ] && echo "[ShinyOS] Aguardando $root..."
+        sleep 0.5
+        i=$((i + 1))
+    done
+
+    if [ -z "$dev" ]; then
+        rescue "Partição raiz $root não encontrada."
+        continue
+    fi
+
+    # Verifica o sistema de arquivos antes de montar (0/1 = ok/corrigido sozinho)
+    if [ -x /sbin/e2fsck ]; then
+        case $rootfstype in ext2|ext3|ext4)
+            echo "[ShinyOS] Verificando $dev..."
+            /sbin/e2fsck -p "$dev"
+            rc=$?
+            if [ $rc -ge 4 ]; then
+                rescue "O disco tem erros que precisam de reparo manual. Rode: e2fsck -y $dev"
+                continue
+            fi
+            if [ $((rc & 2)) -ne 0 ]; then
+                echo "[ShinyOS] Erros corrigidos; reiniciando..."
+                sleep 2
+                reboot -f
+            fi
+            ;;
+        esac
+    fi
+
+    mkdir -p /newroot
+    if ! mount -t "$rootfstype" -o "$rootflags" "$dev" /newroot; then
+        rescue "Falha ao montar $dev em /newroot."
+        continue
+    fi
+    if [ ! -x "/newroot$init" ]; then
+        umount /newroot
+        rescue "$init não existe em $dev."
+        continue
+    fi
+    break
+done
+
+mount --move /dev /newroot/dev 2>/dev/null || umount /dev
+umount /sys /proc
+exec switch_root /newroot "$init"

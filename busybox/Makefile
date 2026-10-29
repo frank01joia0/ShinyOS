@@ -1,60 +1,70 @@
+.RECIPEPREFIX := >
+.NOTPARALLEL:
+
 TOP ?= $(abspath ..)
-BUSYBOX_VERSION ?= 1.36.1
-BUSYBOX_CC ?= musl-gcc
-JOBS ?= $(shell nproc)
+BUILD ?= $(TOP)/build
+BUSYBOX_VERSION ?= 1.38.0
+BUSYBOX_URL ?= https://busybox.net/downloads/busybox-$(BUSYBOX_VERSION).tar.bz2
+JOBS ?= $(shell nproc 2>/dev/null || echo 1)
 
-DL_DIR := $(TOP)/build/distfiles
-SRC_DIR := $(TOP)/build/busybox-$(BUSYBOX_VERSION)
-OUT_DIR := $(TOP)/build/busybox
-TARBALL := $(DL_DIR)/busybox-$(BUSYBOX_VERSION).tar.bz2
-CONFIG_FILE := $(TOP)/configs/busybox.config
-OUT := $(OUT_DIR)/busybox
+# musl gera um binário estático pequeno; sem ele, cai para glibc estática
+BUSYBOX_CC ?= $(shell command -v musl-gcc >/dev/null 2>&1 && echo musl-gcc || echo gcc)
+KHEADERS ?= $(BUILD)/kheaders
 
-.PHONY: all fetch extract config menuconfig build clean distclean list check
+DL_DIR ?= $(BUILD)/distfiles
+SRC_DIR ?= $(BUILD)/busybox-$(BUSYBOX_VERSION)
+OUT_DIR ?= $(BUILD)/busybox
+TARBALL ?= $(DL_DIR)/busybox-$(BUSYBOX_VERSION).tar.bz2
+FRAGMENT ?= $(TOP)/configs/busybox.fragment
+CONFIG_FILE ?= $(TOP)/configs/busybox.config
+OUT ?= $(OUT_DIR)/busybox
+
+BB_CC := $(BUSYBOX_CC)$(if $(filter musl-gcc,$(BUSYBOX_CC)), -isystem $(KHEADERS)/include)
+
+.PHONY: all config menuconfig list clean distclean
 
 all: $(OUT)
 
-fetch:
-	mkdir -p "$(DL_DIR)"
-	test -f "$(TARBALL)" || wget -O "$(TARBALL)" "https://busybox.net/downloads/busybox-$(BUSYBOX_VERSION).tar.bz2"
+$(TARBALL):
+>mkdir -p "$(DL_DIR)"
+>wget -c -O "$@.part" "$(BUSYBOX_URL)"
+>mv "$@.part" "$@"
 
-extract: fetch
-	mkdir -p "$(TOP)/build"
-	test -d "$(SRC_DIR)" || tar -xf "$(TARBALL)" -C "$(TOP)/build"
+$(SRC_DIR)/Makefile: $(TARBALL)
+>rm -rf "$(SRC_DIR)"
+>tar -xf "$(TARBALL)" -C "$(BUILD)"
+>touch "$@"
 
-config: extract
-	cd "$(SRC_DIR)" && make allnoconfig
-	python3 "$(TOP)/busybox/set-busybox-config.py" "$(SRC_DIR)/.config"
-	cd "$(SRC_DIR)" && yes "" | make oldconfig
-	mkdir -p "$(TOP)/configs"
-	cp "$(SRC_DIR)/.config" "$(CONFIG_FILE)"
-	@echo "[✓] Config salva em $(CONFIG_FILE)"
+$(SRC_DIR)/.config: $(FRAGMENT) $(TOP)/scripts/apply-fragment.sh $(SRC_DIR)/Makefile
+>echo "[*] Configurando BusyBox (defconfig + fragmento)..."
+>$(MAKE) -C "$(SRC_DIR)" defconfig >/dev/null
+>sh "$(TOP)/scripts/apply-fragment.sh" "$@" "$(FRAGMENT)"
+>yes "" | $(MAKE) -C "$(SRC_DIR)" oldconfig >/dev/null
+>cp "$@" "$(CONFIG_FILE)"
 
-menuconfig: config
-	cd "$(SRC_DIR)" && make menuconfig
-	cp "$(SRC_DIR)/.config" "$(CONFIG_FILE)"
+config: $(SRC_DIR)/.config
 
-build: config
-	cd "$(SRC_DIR)" && make -j$(JOBS) CC="$(BUSYBOX_CC)"
+menuconfig: $(SRC_DIR)/.config
+>$(MAKE) -C "$(SRC_DIR)" menuconfig
+>cp "$(SRC_DIR)/.config" "$(CONFIG_FILE)"
 
-$(OUT): build
-	mkdir -p "$(OUT_DIR)"
-	cp "$(SRC_DIR)/busybox" "$(OUT)"
-	chmod +x "$(OUT)"
-	file "$(OUT)"
-	"$(OUT)" --list | wc -l
+$(OUT): $(SRC_DIR)/.config
+>@if [ "$(BUSYBOX_CC)" = musl-gcc ] && [ ! -f "$(KHEADERS)/include/linux/version.h" ]; then \
+>    echo "[!] Headers do kernel não encontrados em $(KHEADERS) (rode: make -C kernel headers)"; exit 1; \
+>fi
+>echo "[*] Compilando BusyBox $(BUSYBOX_VERSION) com $(BUSYBOX_CC)..."
+>$(MAKE) -C "$(SRC_DIR)" -j"$(JOBS)" CC="$(BB_CC)" busybox
+>mkdir -p "$(OUT_DIR)"
+>cp "$(SRC_DIR)/busybox" "$@"
+>file "$@"
+>echo "[✓] BusyBox pronto: $$("$@" --list | wc -l) applets"
 
 list: $(OUT)
-	"$(OUT)" --list
-
-check: $(OUT)
-	file "$(OUT)"
-	"$(OUT)" --list
-	"$(OUT)" --list | wc -l
+>"$(OUT)" --list
 
 clean:
-	test ! -d "$(SRC_DIR)" || $(MAKE) -C "$(SRC_DIR)" clean
-	rm -rf "$(OUT_DIR)"
+>test ! -d "$(SRC_DIR)" || $(MAKE) -C "$(SRC_DIR)" clean
+>rm -rf "$(OUT_DIR)"
 
 distclean:
-	rm -rf "$(SRC_DIR)" "$(OUT_DIR)"
+>rm -rf "$(SRC_DIR)" "$(OUT_DIR)"

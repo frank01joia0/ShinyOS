@@ -1,0 +1,20 @@
+#!/bin/sh
+# elogind: sessões de login (logind sem systemd). O KWin precisa dele para
+# acessar a placa de vídeo e os dispositivos de entrada.
+. /etc/rc.d/rc.subr
+name=elogind
+P=/nix/var/nix/profiles/shiny-desktop
+[ -e "$P" ] || { [ "$1" = status ] && echo "desktop não instalado"; exit 0; }
+command=$P/libexec/elogind
+pidfile=/run/elogind.pid
+
+start_cmd() {
+    [ -x "$command" ] || { echo "elogind não encontrado no perfil (rode: sudo shiny-desktop update)"; return 1; }
+    mountpoint -q /sys/fs/cgroup || mount -t cgroup2 -o nsdelegate cgroup2 /sys/fs/cgroup
+    "$command" --daemon
+    sleep 1
+    pidof elogind > "$pidfile"
+}
+stop_cmd()   { [ -f "$pidfile" ] && kill "$(cat "$pidfile")"; rm -f "$pidfile"; }
+status_cmd() { pidof elogind >/dev/null; }
+run_rc_command "$1"

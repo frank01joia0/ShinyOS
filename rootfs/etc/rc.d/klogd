@@ -1,0 +1,8 @@
+#!/bin/sh
+. /etc/rc.d/rc.subr
+name=klogd
+command=/sbin/klogd
+start_cmd() { $command -c 3; }
+stop_cmd()  { killall -q klogd; }
+status_cmd() { pidof klogd >/dev/null; }
+run_rc_command "$1"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Sobe o PipeWire dentro da sessão gráfica (sem systemd --user)
+pidof pipewire >/dev/null && exit 0
+pipewire &
+sleep 1
+wireplumber &
+pipewire-pulse &
+wait

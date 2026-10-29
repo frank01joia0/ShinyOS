@@ -1,0 +1,155 @@
+#!/bin/sh
+# wifi — conecta em redes Wi-Fi (usa o wpa_supplicant via wpa_cli)
+#   wifi              procura redes e conecta (menu)
+#   wifi status       mostra a conexão atual
+#   wifi salvas       lista as redes salvas
+#   wifi esquecer     remove uma rede salva
+
+. /usr/lib/shinyos/ui.sh
+
+iface() {
+    for i in /sys/class/net/*; do
+        [ -d "$i/wireless" ] || [ -d "$i/phy80211" ] && { echo "${i##*/}"; return; }
+    done
+}
+
+IF=$(iface)
+if [ -z "$IF" ]; then
+    ui_warn "Nenhuma placa Wi-Fi encontrada."
+    ui_say "Se o computador tem Wi-Fi, a placa pode precisar de um driver que a ShinyOS ainda não inclui."
+    exit 1
+fi
+
+cli() { wpa_cli -i "$IF" "$@" 2>/dev/null; }
+
+if ! cli ping | grep -q PONG; then
+    if [ "$(id -u)" -eq 0 ]; then
+        /etc/rc.d/wifi start >/dev/null
+        sleep 1
+    fi
+    cli ping | grep -q PONG || {
+        ui_warn "O serviço de Wi-Fi não está rodando. Use: sudo service wifi start"
+        exit 1
+    }
+fi
+
+show_status() {
+    st=$(cli status)
+    state=$(printf '%s\n' "$st" | sed -n 's/^wpa_state=//p')
+    ssid=$(printf '%s\n' "$st" | sed -n 's/^ssid=//p')
+    ip=$(ip -4 -o addr show dev "$IF" | awk '{print $4}')
+    if [ "$state" = COMPLETED ]; then
+        ui_ok "Conectado a ${ui_b}$ssid${ui_off} ${ip:+($ip)}"
+    else
+        ui_say "Não conectado ($IF: ${state:-?})"
+    fi
+}
+
+wait_connect() {
+    i=0
+    while [ $i -lt 30 ]; do
+        state=$(cli status | sed -n 's/^wpa_state=//p')
+        [ "$state" = COMPLETED ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ "$state" != COMPLETED ]; then
+        ui_warn "Não consegui conectar. Confira a senha e tente de novo."
+        return 1
+    fi
+    # IP via DHCP (o udhcpc do serviço wifi já está rodando)
+    i=0
+    while [ $i -lt 15 ]; do
+        ip -4 -o addr show dev "$IF" | grep -q inet && break
+        sleep 1; i=$((i + 1))
+    done
+    show_status
+}
+
+connect_menu() {
+    ui_title "Wi-Fi"
+    ui_say "Procurando redes..."
+    cli scan >/dev/null
+    sleep 4
+    # bssid freq sinal flags ssid -> "sinal|segurança|ssid", melhor sinal primeiro, sem repetir SSID
+    list=$(cli scan_results | tail -n +2 | awk -F'\t' '$5 != "" {
+            sec = "aberta"
+            if ($4 ~ /SAE/) sec = "WPA3"; else if ($4 ~ /WPA/) sec = "WPA2"
+            if ($4 ~ /EAP/) sec = "corporativa"
+            print $3 "\t" sec "\t" $5 }' | sort -t"$(printf '\t')" -k1,1nr | awk -F'\t' '!seen[$3]++')
+    if [ -z "$list" ]; then
+        ui_warn "Nenhuma rede encontrada."
+        return 1
+    fi
+    labels= ssids=
+    old_ifs=$IFS
+    IFS='
+'
+    n=0
+    for l in $list; do
+        sig=${l%%	*}; rest=${l#*	}; sec=${rest%%	*}; ssid=${rest#*	}
+        if   [ "$sig" -ge -55 ]; then bars="▂▄▆█"
+        elif [ "$sig" -ge -67 ]; then bars="▂▄▆ "
+        elif [ "$sig" -ge -78 ]; then bars="▂▄  "
+        else bars="▂   "; fi
+        labels="$labels${labels:+|}$bars  $ssid  ($sec)"
+        n=$((n + 1))
+        eval "ssid_$n=\$ssid sec_$n=\$sec"
+    done
+    IFS=$old_ifs
+    old_ifs=$IFS; IFS='|'; set -- $labels; IFS=$old_ifs
+    ui_menu "Número da rede:" "$@"
+    eval "ssid=\$ssid_$REPLY sec=\$sec_$REPLY"
+
+    if [ "$sec" = corporativa ]; then
+        ui_warn "Redes corporativas (eduroam etc.) ainda precisam ser configuradas à mão em"
+        ui_warn "/etc/wpa_supplicant/wpa_supplicant.conf."
+        return 1
+    fi
+
+    id=$(cli add_network | tail -n1)
+    case $id in *[!0-9]*|'') ui_warn "Erro ao criar a rede (sem permissão? use sudo)."; return 1 ;; esac
+    hex=$(printf '%s' "$ssid" | od -An -tx1 | tr -d ' \n')
+    cli set_network "$id" ssid "$hex" >/dev/null
+    if [ "$sec" = aberta ]; then
+        cli set_network "$id" key_mgmt NONE >/dev/null
+    else
+        while :; do
+            printf '  %s?%s Senha de "%s": ' "$ui_hi" "$ui_off" "$ssid"
+            read -rs pass; echo
+            [ ${#pass} -ge 8 ] && break
+            ui_warn "Senhas de Wi-Fi têm pelo menos 8 caracteres."
+        done
+        cli set_network "$id" key_mgmt "WPA-PSK WPA-PSK-SHA256 SAE" >/dev/null
+        cli set_network "$id" ieee80211w 1 >/dev/null
+        cli set_network "$id" psk "\"$pass\"" >/dev/null || {
+            ui_warn "Senha com caracteres não suportados."; cli remove_network "$id" >/dev/null; return 1; }
+        unset pass
+    fi
+    cli enable_network "$id" >/dev/null
+    cli select_network "$id" >/dev/null
+    ui_say "Conectando a $ssid..."
+    if wait_connect; then
+        cli save_config >/dev/null && ui_ok "Rede salva: conecta sozinha nas próximas vezes."
+    else
+        cli remove_network "$id" >/dev/null
+        cli reconfigure >/dev/null
+        return 1
+    fi
+}
+
+case ${1:-} in
+    status) show_status ;;
+    salvas|list)
+        cli list_networks | tail -n +2 | awk -F'\t' '{print "  • " $2 ($4 ~ /CURRENT/ ? "  (conectada)" : "")}' ;;
+    esquecer|forget)
+        nets=$(cli list_networks | tail -n +2)
+        [ -n "$nets" ] || { ui_say "Nenhuma rede salva."; exit 0; }
+        labels=$(printf '%s\n' "$nets" | awk -F'\t' '{printf "%s%s", (NR>1?"|":""), $2}')
+        ids=$(printf '%s\n' "$nets" | awk -F'\t' '{print $1}')
+        ui_pick_list "Esquecer qual rede?" "$labels" "$ids"
+        cli remove_network "$REPLY" >/dev/null && cli save_config >/dev/null && ui_ok "Rede removida."
+        ;;
+    -h|--help|ajuda)
+        sed -n '2,6s/^# \{0,1\}//p' "$0" ;;
+    *) connect_menu ;;
+esac

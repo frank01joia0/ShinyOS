@@ -1,0 +1,19 @@
+#!/bin/sh
+# shiny-session — abre o KDE Plasma (Wayland) a partir de um console
+P=/nix/var/nix/profiles/shiny-desktop
+if [ ! -e "$P" ]; then
+    echo "O desktop não está instalado. Instale com: sudo shiny-desktop install" >&2
+    exit 1
+fi
+[ "$(id -u)" -ne 0 ] || { echo "Abra o KDE com seu usuário, não como root." >&2; exit 1; }
+export SHINY_SESSION=1   # evita que o profile.d abra outra sessão
+. /etc/profile.d/shiny-desktop.sh
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    echo "Pasta /run/user/$(id -u) ausente; reinicie o computador ou rode: sudo /usr/libexec/shinyos/desktop-runtime" >&2
+    exit 1
+fi
+export XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=KDE XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true
+mkdir -p "$HOME/.local/state"
+log="$HOME/.local/state/plasma-session.log"
+echo "Abrindo o KDE Plasma... (registro em $log)"
+"$P/bin/dbus-run-session" "$P/bin/startplasma-wayland" > "$log" 2>&1

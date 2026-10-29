@@ -1,0 +1,18 @@
+#!/bin/sh
+# nix-daemon: permite que todos os usuários instalem pacotes com o Nix
+. /etc/rc.d/rc.subr
+name=nixdaemon
+command=/nix/var/nix/profiles/default/bin/nix-daemon
+pidfile=/run/nix-daemon.pid
+
+# Nix ainda não instalado: nada a fazer
+[ -x "$command" ] || { [ "$1" = status ] && echo "Nix não instalado (use: pkg setup)"; exit 0; }
+
+start_cmd() {
+    export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    start-stop-daemon -S -q -b -m -p "$pidfile" -x "$command" -- --daemon
+}
+# o executável real fica no /nix/store, então só o pidfile identifica o processo
+stop_cmd()   { start-stop-daemon -K -q -p "$pidfile" && rm -f "$pidfile"; }
+status_cmd() { [ -f "$pidfile" ] && [ -d "/proc/$(cat "$pidfile")" ]; }
+run_rc_command "$1"

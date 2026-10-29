@@ -1,0 +1,14 @@
+root:x:0:root
+daemon:x:1:
+bin:x:2:
+sys:x:3:
+adm:x:4:
+tty:x:5:
+disk:x:6:
+wheel:x:10:root
+audio:x:11:
+video:x:12:
+input:x:13:
+users:x:100:
+messagebus:x:81:
+nogroup:x:65534:

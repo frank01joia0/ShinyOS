@@ -1,0 +1,76 @@
+#!/bin/sh
+# shiny-nix-setup — instala o gerenciador de pacotes Nix (modo multiusuário,
+# com nix-daemon) a partir do tarball oficial que vem dentro da ShinyOS.
+# Também roda dentro de chroot (o shiny-install usa assim).
+
+set -eu
+. /usr/lib/shinyos/ui.sh
+
+NIX_DIR=/usr/lib/shinyos/nix
+NIX_VERSION=$(cat "$NIX_DIR/VERSION" 2>/dev/null || true)
+TARBALL=$NIX_DIR/nix-$NIX_VERSION-x86_64-linux.tar.xz
+PROFILE=/nix/var/nix/profiles/default
+
+[ "$(id -u)" -eq 0 ] || { ui_warn "Rode como root."; exit 1; }
+if [ -x "$PROFILE/bin/nix" ]; then
+    ui_ok "O Nix já está instalado."
+    exit 0
+fi
+[ -f "$TARBALL" ] || { ui_warn "Tarball do Nix não encontrado em $NIX_DIR."; exit 1; }
+
+ui_say "Instalando o Nix $NIX_VERSION..."
+
+# Usuários que o nix-daemon usa para compilar pacotes
+grep -q '^nixbld:' /etc/group || addgroup -S -g 30000 nixbld
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    grep -q "^nixbld$i:" /etc/passwd ||
+        adduser -S -D -H -h /var/empty -s /bin/false -G nixbld -u $((30000 + i)) "nixbld$i"
+done
+mkdir -p /var/empty
+
+# Extrai no disco (/var/tmp), não no /tmp que fica na RAM
+tmp=/var/tmp/shiny-nix.$$
+rm -rf "$tmp"
+mkdir -p "$tmp"
+trap 'rm -rf "$tmp"' EXIT
+tar -xJf "$TARBALL" -C "$tmp"
+src=$tmp/nix-$NIX_VERSION-x86_64-linux
+
+mkdir -p /nix/store /nix/var/nix/profiles/per-user /nix/var/nix/gcroots/per-user \
+         /nix/var/nix/daemon-socket /etc/nix
+chown root:nixbld /nix/store
+chmod 1775 /nix/store
+ui_say "Copiando $(ls "$src/store" | wc -l) pacotes para /nix/store..."
+cp -a "$src/store/." /nix/store/
+
+nix=$(ls -d /nix/store/*-nix-"$NIX_VERSION" | head -n1)
+cacert=$(ls -d /nix/store/*-nss-cacert-* | grep -v '\.drv$' | head -n1)
+[ -x "$nix/bin/nix" ] || { ui_warn "Pacote do Nix não encontrado no tarball."; exit 1; }
+
+"$nix/bin/nix-store" --load-db < "$src/.reginfo"
+export NIX_SSL_CERT_FILE=$cacert/etc/ssl/certs/ca-bundle.crt
+"$nix/bin/nix-env" -p "$PROFILE" -i "$nix" "$cacert" >/dev/null
+
+cat > /etc/nix/nix.conf <<CONF
+# /etc/nix/nix.conf — gerado pelo shiny-nix-setup
+build-users-group = nixbld
+experimental-features = nix-command flakes
+auto-optimise-store = true
+# o kernel da ShinyOS ainda não habilita user namespaces
+sandbox = false
+CONF
+
+# Certificados para outros programas (wget/curl do Nix etc.)
+mkdir -p /etc/ssl/certs
+ln -sf "$PROFILE/etc/ssl/certs/ca-bundle.crt" /etc/ssl/certs/ca-certificates.crt
+
+ui_rcconf_set nixdaemon_enable YES
+grep -q '^rc_services=.*nixdaemon' /etc/rc.conf ||
+    sed -i 's/^rc_services="\(.*\)"/rc_services="\1 nixdaemon"/' /etc/rc.conf
+
+# Fora de chroot, já sobe o daemon
+if [ -d /proc/1 ] && [ "$(stat -c %i /)" = "$(stat -c %i /proc/1/root/. 2>/dev/null)" ]; then
+    /etc/rc.d/nixdaemon start
+fi
+
+ui_ok "Nix instalado! Abra um novo login (ou rode: . /etc/profile) e use: pkg install <nome>"

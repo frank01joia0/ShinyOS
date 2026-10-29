@@ -1,0 +1,14 @@
+## /etc/sudoers — edite com: visudo
+##
+## Usuários do grupo wheel podem rodar qualquer comando como root,
+## digitando a própria senha.
+
+Defaults env_reset
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults timestamp_timeout=10
+Defaults env_keep += "LANG LC_ALL TERM COLORTERM NIX_PATH"
+
+root   ALL=(ALL:ALL) ALL
+%wheel ALL=(ALL:ALL) ALL
+
+@includedir /etc/sudoers.d

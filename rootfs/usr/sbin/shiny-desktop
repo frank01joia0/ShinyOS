@@ -1,0 +1,127 @@
+#!/bin/sh
+# shiny-desktop — instala e integra o KDE Plasma (via Nix) na ShinyOS
+#   shiny-desktop install     baixa e instala (~3 GB, precisa de internet)
+#   shiny-desktop update      atualiza para a versão do desktop.nix atual
+#   shiny-desktop remove      desinstala (o espaço volta após: pkg clean)
+#   shiny-desktop status
+
+set -u
+. /usr/lib/shinyos/ui.sh
+
+PROFILE=/nix/var/nix/profiles/shiny-desktop
+NIXFILE=/usr/lib/shinyos/desktop/desktop.nix
+NIX_SH=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+need_nix() {
+    [ -r "$NIX_SH" ] || { ui_warn "O Nix não está instalado. Rode antes: pkg setup"; exit 1; }
+    command -v nix >/dev/null 2>&1 || . "$NIX_SH"
+}
+
+keymap_to_xkb() {
+    case $1 in
+        br-abnt2) echo br ;; pt-latin1) echo pt ;; uk) echo gb ;;
+        us|es|de|fr) echo "$1" ;; *) echo us ;;
+    esac
+}
+
+# Arquivos em /etc que ligam o sistema ao perfil do desktop
+integrate() {
+    P=$(readlink -f "$PROFILE")
+
+    # usuários/grupos dos serviços
+    grep -q '^messagebus:' /etc/group  || addgroup -S -g 81 messagebus
+    grep -q '^messagebus:' /etc/passwd || adduser -S -D -H -h /run/dbus -s /bin/false -G messagebus -u 81 messagebus
+
+    # udev: regras e hwdb dos pacotes do perfil
+    mkdir -p /etc/udev/rules.d /etc/udev/hwdb.d
+    find /etc/udev/rules.d /etc/udev/hwdb.d -type l -delete
+    # o eudev do Nix guarda as regras básicas em var/lib/udev; os outros pacotes em lib/udev
+    for d in "$P/var/lib/udev" "$P/lib/udev"; do
+        for f in "$d"/rules.d/*.rules; do [ -e "$f" ] && ln -sf "$f" /etc/udev/rules.d/; done
+        for f in "$d"/hwdb.d/*.hwdb;   do [ -e "$f" ] && ln -sf "$f" /etc/udev/hwdb.d/; done
+    done
+    "$P/bin/udevadm" hwdb --update 2>/dev/null
+
+    # dbus: id da máquina
+    [ -s /etc/machine-id ] || "$P/bin/dbus-uuidgen" > /etc/machine-id
+    mkdir -p /var/lib/dbus
+    ln -sf /etc/machine-id /var/lib/dbus/machine-id
+
+    # PAM: login (registra a sessão no elogind) e tela de bloqueio do Plasma
+    mkdir -p /etc/pam.d
+    cat > /etc/pam.d/login <<PAM
+auth     required $PROFILE/lib/security/pam_unix.so
+account  required $PROFILE/lib/security/pam_unix.so
+password required $PROFILE/lib/security/pam_unix.so sha512
+session  required $PROFILE/lib/security/pam_unix.so
+session  optional $PROFILE/lib/security/pam_elogind.so
+PAM
+    touch /etc/login.defs
+    for svc in kde other; do
+        cat > "/etc/pam.d/$svc" <<PAM
+auth     required $PROFILE/lib/security/pam_unix.so
+account  required $PROFILE/lib/security/pam_unix.so
+password required $PROFILE/lib/security/pam_unix.so sha512
+session  required $PROFILE/lib/security/pam_unix.so
+PAM
+    done
+
+    # teclado do Plasma igual ao do console
+    . /etc/rc.conf
+    mkdir -p /etc/xdg
+    cat > /etc/xdg/kxkbrc <<KXKB
+[Layout]
+LayoutList=$(keymap_to_xkb "${keymap:-us}")
+Use=true
+KXKB
+
+    ui_rcconf_set desktop_enable YES
+    for s in udev dbus elogind; do ui_rcconf_set "${s}_enable" YES; done
+    ui_rcconf_set seatd_enable NO
+    grep -q '^rc_services=.*elogind' /etc/rc.conf ||
+        sed -i 's/^rc_services="\(.*\)"/rc_services="\1 elogind"/' /etc/rc.conf
+}
+
+case ${1:-status} in
+    install|update)
+        ui_need_root "shiny-desktop $1"
+        need_nix
+        /sbin/ip route 2>/dev/null | grep -q '^default' ||
+            { ui_warn "Sem internet. Conecte (cabo ou: wifi) e tente de novo."; exit 1; }
+        avail=$(df -m /nix 2>/dev/null | awk 'NR==2 {print $4}')
+        [ "${avail:-0}" -ge 8000 ] || ui_warn "Pouco espaço livre (${avail:-?} MB); o desktop usa uns 6 GB."
+        ui_say "Baixando o KDE Plasma (uns 3 GB). Isso pode levar bastante tempo..."
+        out=$(nix-build --no-out-link "$NIXFILE") || { ui_warn "Falha ao baixar/montar o desktop."; exit 1; }
+        nix-env -p "$PROFILE" --set "$out" || exit 1
+        integrate
+        if [ -z "${SHINY_CHROOT:-}" ]; then
+            ui_say "Iniciando os serviços do desktop..."
+            /usr/libexec/shinyos/desktop-runtime
+            for s in udev dbus elogind; do /etc/rc.d/$s start; done
+        fi
+        ui_ok "KDE Plasma instalado!"
+        ui_say "Entre no tty1 com seu usuário (não root) e o Plasma abre sozinho."
+        ui_say "Para abrir manualmente: shiny-session"
+        ;;
+    remove)
+        ui_need_root "shiny-desktop remove"
+        need_nix
+        for s in elogind dbus udev; do /etc/rc.d/$s stop >/dev/null 2>&1; ui_rcconf_set "${s}_enable" NO; done
+        ui_rcconf_set desktop_enable NO
+        nix-env -p "$PROFILE" --delete-generations old >/dev/null 2>&1
+        rm -f "$PROFILE" "$PROFILE"-*-link
+        ui_ok "Desktop removido. Para liberar o espaço: pkg clean"
+        ;;
+    status)
+        if [ -e "$PROFILE" ]; then
+            ui_ok "KDE Plasma instalado: $(readlink -f "$PROFILE")"
+            for s in udev dbus elogind; do /etc/rc.d/$s status; done
+        else
+            ui_say "Desktop não instalado. Instale com: sudo shiny-desktop install"
+        fi
+        ;;
+    *)
+        sed -n '2,6s/^# \{0,1\}//p' "$0"
+        exit 1
+        ;;
+esac

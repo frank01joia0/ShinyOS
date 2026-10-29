@@ -1,0 +1,12 @@
+#!/bin/sh
+# seatd: dá ao KDE (kwin) acesso à placa de vídeo e entrada sem precisar de root
+. /etc/rc.d/rc.subr
+name=seatd
+P=/nix/var/nix/profiles/shiny-desktop
+[ -e "$P" ] || { [ "$1" = status ] && echo "desktop não instalado"; exit 0; }
+pidfile=/run/seatd.pid
+
+start_cmd()  { start-stop-daemon -S -q -b -m -p "$pidfile" -x "$P/bin/seatd" -- -g video; }
+stop_cmd()   { start-stop-daemon -K -q -p "$pidfile"; rm -f "$pidfile"; }
+status_cmd() { [ -f "$pidfile" ] && [ -d "/proc/$(cat "$pidfile")" ]; }
+run_rc_command "$1"

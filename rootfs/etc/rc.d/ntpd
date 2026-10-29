@@ -1,0 +1,8 @@
+#!/bin/sh
+. /etc/rc.d/rc.subr
+name=ntpd
+command=/usr/sbin/ntpd
+start_cmd() { $command -p "${ntpd_server:-pool.ntp.org}"; }
+stop_cmd()  { killall -q ntpd; }
+status_cmd() { pidof ntpd >/dev/null; }
+run_rc_command "$1"

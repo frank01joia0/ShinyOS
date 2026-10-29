@@ -1,0 +1,19 @@
+#!/bin/sh
+# Chamado pelo getty do tty1: no modo live entra direto como root,
+# no sistema instalado pede usuário e senha normalmente.
+if [ -e /etc/shinyos/live ]; then
+    # Com o desktop instalado, o login do perfil (com PAM) registra a sessão no
+# elogind, que dá ao KDE acesso à placa de vídeo e ao teclado/mouse
+P=/nix/var/nix/profiles/shiny-desktop
+if [ -x "$P/bin/login" ] && [ -f /etc/pam.d/login ] && pidof elogind >/dev/null 2>&1; then
+    exec "$P/bin/login"
+fi
+exec /bin/login -f root
+fi
+# Com o desktop instalado, o login do perfil (com PAM) registra a sessão no
+# elogind, que dá ao KDE acesso à placa de vídeo e ao teclado/mouse
+P=/nix/var/nix/profiles/shiny-desktop
+if [ -x "$P/bin/login" ] && [ -f /etc/pam.d/login ] && pidof elogind >/dev/null 2>&1; then
+    exec "$P/bin/login"
+fi
+exec /bin/login

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Áudio (PipeWire)
+Exec=/usr/libexec/shinyos/session-audio
+NoDisplay=true
+X-KDE-autostart-phase=1

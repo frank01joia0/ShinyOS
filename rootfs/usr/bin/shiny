@@ -1,0 +1,257 @@
+#!/bin/sh
+# shiny — central de boas-vindas e configuração da ShinyOS
+
+. /usr/lib/shinyos/ui.sh
+. /etc/os-release
+
+is_root() { [ "$(id -u)" -eq 0 ]; }
+is_live() { [ -e /etc/shinyos/live ]; }
+
+root_only() {
+    is_root && return 0
+    ui_warn "Esta opção precisa de administrador. Rode: sudo shiny"
+    ui_pause
+    return 1
+}
+
+apply_keymap() {
+    f=/usr/share/keymaps/$1.bmap
+    [ -f "$f" ] && loadkmap < "$f"
+    ui_rcconf_set keymap "$1"
+}
+
+# --- ações ---------------------------------------------------------------------
+do_info() {
+    clear
+    shinyfetch
+    ui_pause
+}
+
+do_keymap() {
+    root_only || return
+    ui_title "Layout do teclado"
+    ui_pick_list "Escolha o layout:" "$UI_KEYMAP_NAMES" "$UI_KEYMAP_VALUES"
+    apply_keymap "$REPLY"
+    ui_ok "Teclado: $REPLY"
+    ui_pause
+}
+
+do_timezone() {
+    root_only || return
+    ui_title "Fuso horário"
+    ui_pick_list "Escolha o fuso:" "$UI_TZ_NAMES" "$UI_TZ_VALUES"
+    ui_rcconf_set timezone "$REPLY"
+    echo "TZ=$REPLY" > /run/shinyos/tz
+    ui_ok "Fuso horário salvo. Vale a partir do próximo login."
+    ui_pause
+}
+
+do_hostname() {
+    root_only || return
+    ui_title "Nome da máquina"
+    ui_ask "Novo nome:" "$(hostname)"
+    case $REPLY in
+        *[!A-Za-z0-9-]*|-*) ui_warn "Use só letras, números e hífen." ;;
+        *) echo "$REPLY" > /etc/hostname; hostname "$REPLY"; ui_ok "Agora a máquina se chama $REPLY." ;;
+    esac
+    ui_pause
+}
+
+do_adduser() {
+    root_only || return
+    ui_title "Criar usuário"
+    ui_ask "Nome do usuário (minúsculas):"
+    case $REPLY in
+        ''|*[!a-z0-9_-]*|[0-9-]*) ui_warn "Nome inválido."; ui_pause; return ;;
+    esac
+    u=$REPLY
+    if grep -q "^$u:" /etc/passwd; then ui_warn "$u já existe."; ui_pause; return; fi
+    adduser -D -s /bin/sh -G users "$u" &&
+    for g in audio video input; do addgroup "$u" "$g" 2>/dev/null; done
+    ui_yesno "Dar acesso de administrador (sudo)?" n && addgroup "$u" wheel
+    passwd "$u" && ui_ok "Usuário $u criado."
+    /usr/libexec/shinyos/desktop-runtime
+    ui_pause
+}
+
+do_passwd() {
+    ui_title "Trocar senha"
+    if is_root; then
+        ui_ask "Trocar a senha de qual usuário?" root
+        passwd "$REPLY"
+    else
+        passwd
+    fi
+    ui_pause
+}
+
+do_network() {
+    ui_title "Rede"
+    if /sbin/ip route | grep -q '^default'; then
+        ui_ok "Conectado."
+        ip -4 -o addr show | awk '$2 != "lo" { print "    " $2 ": " $4 }'
+        ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 && ui_ok "Internet funcionando." || ui_warn "Sem acesso à internet."
+    else
+        ui_warn "Sem conexão. Só rede cabeada é suportada por enquanto."
+    fi
+    echo
+    if is_root && ui_yesno "Reiniciar a rede agora?" n; then
+        service network restart
+        sleep 3
+        ip -4 -o addr show | awk '$2 != "lo" { print "    " $2 ": " $4 }'
+    fi
+    ui_pause
+}
+
+do_wifi() {
+    wifi
+    ui_pause
+}
+
+do_desktop() {
+    ui_title "Desktop KDE Plasma"
+    if [ -e /nix/var/nix/profiles/shiny-desktop ]; then
+        ui_ok "O KDE Plasma está instalado."
+        ui_say "Ele abre sozinho quando você entra no tty1 com seu usuário."
+        ui_say "Para abrir agora (fora do root): shiny-session"
+        echo
+        if is_root && ui_yesno "Procurar atualização do desktop?" n; then
+            shiny-desktop update
+        fi
+    else
+        ui_say "Instala o KDE Plasma com Dolphin, Konsole, Kate, Firefox e mais."
+        ui_say "Baixa uns 3 GB da internet e ocupa uns 6 GB no disco."
+        echo
+        if ! is_root; then
+            ui_say "Peça ao administrador ou rode: sudo shiny-desktop install"
+        elif [ ! -x /nix/var/nix/profiles/default/bin/nix ]; then
+            ui_warn "Instale o Nix antes (opção Pacotes)."
+        elif ui_yesno "Instalar o KDE Plasma agora?"; then
+            shiny-desktop install
+        fi
+    fi
+    ui_pause
+}
+
+do_packages() {
+    ui_title "Pacotes (Nix)"
+    if [ ! -x /nix/var/nix/profiles/default/bin/nix ]; then
+        ui_say "O gerenciador de pacotes ainda não está instalado."
+        if is_root && ui_yesno "Instalar o Nix agora?"; then
+            shiny-nix-setup
+        elif ! is_root; then
+            ui_say "Peça ao root para rodar: pkg setup"
+        fi
+        ui_pause
+        return
+    fi
+    pkg help
+    ui_ask "Nome do pacote para instalar (vazio = voltar):"
+    [ -n "$REPLY" ] && pkg install $REPLY
+    ui_pause
+}
+
+do_services() {
+    root_only || return
+    while :; do
+        ui_title "Serviços"
+        . /etc/rc.conf
+        set --
+        for f in /etc/rc.d/*; do
+            n=${f##*/}
+            [ "$n" = rc.subr ] && continue
+            eval e=\${${n}_enable:-NO}
+            if /etc/rc.d/"$n" status >/dev/null 2>&1; then st="${ui_ok}rodando${ui_off}"; else st="${ui_dim}parado${ui_off}"; fi
+            set -- "$@" "$(printf '%-10s  ao iniciar: %-3s  agora: %s' "$n" "$e" "$st")"
+        done
+        set -- "$@" "Voltar"
+        ui_menu "Escolha um serviço para ligar/desligar:" "$@"
+        [ "$REPLY" -eq $# ] && return
+        i=0
+        for f in /etc/rc.d/*; do
+            n=${f##*/}
+            [ "$n" = rc.subr ] && continue
+            i=$((i + 1))
+            [ $i -eq "$REPLY" ] && break
+        done
+        eval e=\${${n}_enable:-NO}
+        if [ "$e" = YES ]; then
+            ui_rcconf_set "${n}_enable" NO; /etc/rc.d/"$n" stop
+        else
+            ui_rcconf_set "${n}_enable" YES; /etc/rc.d/"$n" start
+        fi
+        sleep 1
+    done
+}
+
+# --- menus ---------------------------------------------------------------------
+menu_live() {
+    while :; do
+        ui_title "Bem-vindo(a) à $PRETTY_NAME"
+        printf '  Você está no %smodo live%s: tudo roda na memória e nada é salvo.\n\n' "$ui_b" "$ui_off"
+        ui_menu "O que você quer fazer?" \
+            "Instalar a ShinyOS no computador" \
+            "Usar o terminal (modo live)" \
+            "Mudar o layout do teclado" \
+            "Conectar ao Wi-Fi" \
+            "Ver a rede" \
+            "Informações do sistema" \
+            "Desligar" \
+            "Reiniciar"
+        case $REPLY in
+            1) shiny-install; ui_pause ;;
+            2) clear
+               printf '\n  Digite %sshiny%s para voltar a este menu, ou %spkg setup%s para testar o Nix.\n\n' \
+                   "$ui_b" "$ui_off" "$ui_b" "$ui_off"
+               return ;;
+            3) do_keymap ;;
+            4) do_wifi ;;
+            5) do_network ;;
+            6) do_info ;;
+            7) poweroff; sleep 30 ;;
+            8) reboot; sleep 30 ;;
+        esac
+    done
+}
+
+menu_installed() {
+    while :; do
+        ui_title "Configurações da $PRETTY_NAME"
+        ui_menu "Escolha uma opção:" \
+            "Informações do sistema" \
+            "Desktop KDE Plasma" \
+            "Wi-Fi" \
+            "Pacotes (instalar programas)" \
+            "Criar usuário" \
+            "Trocar senha" \
+            "Rede" \
+            "Nome da máquina" \
+            "Teclado" \
+            "Fuso horário" \
+            "Serviços" \
+            "Sair"
+        case $REPLY in
+            1) do_info ;;
+            2) do_desktop ;;
+            3) do_wifi ;;
+            4) do_packages ;;
+            5) do_adduser ;;
+            6) do_passwd ;;
+            7) do_network ;;
+            8) do_hostname ;;
+            9) do_keymap ;;
+            10) do_timezone ;;
+            11) do_services ;;
+            12) clear; return ;;
+        esac
+    done
+}
+
+case ${1:-} in
+    -h|--help|help|ajuda)
+        echo "uso: shiny        abre o menu de configurações"
+        echo "     shiny info   mostra as informações do sistema"
+        ;;
+    info) shinyfetch ;;
+    *) if is_live; then menu_live; else menu_installed; fi ;;
+esac

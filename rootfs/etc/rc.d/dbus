@@ -1,0 +1,17 @@
+#!/bin/sh
+# Barramento D-Bus do sistema (usado pelo KDE)
+. /etc/rc.d/rc.subr
+name=dbus
+P=/nix/var/nix/profiles/shiny-desktop
+[ -e "$P" ] || { [ "$1" = status ] && echo "desktop não instalado"; exit 0; }
+pidfile=/run/dbus/pid
+
+start_cmd() {
+    mkdir -p /run/dbus
+    chown messagebus:messagebus /run/dbus 2>/dev/null
+    rm -f "$pidfile"
+    "$P/bin/dbus-daemon" --config-file=/etc/dbus-1/system.conf
+}
+stop_cmd()   { [ -f "$pidfile" ] && kill "$(cat "$pidfile")"; rm -f "$pidfile"; }
+status_cmd() { [ -f "$pidfile" ] && [ -d "/proc/$(cat "$pidfile")" ]; }
+run_rc_command "$1"

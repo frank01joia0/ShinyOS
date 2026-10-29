@@ -1,0 +1,24 @@
+#!/bin/sh
+# udev (eudev do perfil do desktop): o KDE/libinput precisam dele.
+# Quando roda, substitui o daemon de hotplug do mdev.
+. /etc/rc.d/rc.subr
+name=udev
+P=/nix/var/nix/profiles/shiny-desktop
+[ -e "$P" ] || { [ "$1" = status ] && echo "desktop não instalado"; exit 0; }
+command=$P/bin/udevd
+[ -x "$command" ] || command=$P/sbin/udevd
+
+start_cmd() {
+    /usr/libexec/shinyos/desktop-runtime
+    killall -q mdev
+    "$command" --daemon || { mdev -d; return 1; }
+    "$P/bin/udevadm" trigger --action=add --type=subsystems
+    "$P/bin/udevadm" trigger --action=add --type=devices
+    "$P/bin/udevadm" settle --timeout=10
+}
+stop_cmd() {
+    "$P/bin/udevadm" control --exit 2>/dev/null
+    pidof mdev >/dev/null || mdev -d
+}
+status_cmd() { pidof udevd >/dev/null || pgrep -f '/udevd' >/dev/null; }
+run_rc_command "$1"

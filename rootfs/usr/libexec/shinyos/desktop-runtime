@@ -1,0 +1,28 @@
+#!/bin/sh
+# Prepara o /run para o desktop (o /run é recriado a cada boot).
+# Faz o papel do que o NixOS monta em /run/current-system e /run/wrappers.
+P=/nix/var/nix/profiles/shiny-desktop
+[ -e "$P" ] || exit 0
+P=$(readlink -f "$P")
+
+mkdir -p /run/current-system /run/booted-system/kernel-modules/lib /run/wrappers/bin
+ln -sfn "$P" /run/current-system/sw
+ln -sfn "$P" /run/opengl-driver
+ln -sfn /lib/modules /run/booted-system/kernel-modules/lib/modules
+
+# Tela de bloqueio: o pam_unix chama /run/wrappers/bin/unix_chkpwd (setuid)
+if [ -x "$P/bin/unix_chkpwd" ] || [ -x "$P/sbin/unix_chkpwd" ]; then
+    src=$P/bin/unix_chkpwd; [ -x "$src" ] || src=$P/sbin/unix_chkpwd
+    cp "$src" /run/wrappers/bin/unix_chkpwd
+    chown root:root /run/wrappers/bin/unix_chkpwd
+    chmod 4755 /run/wrappers/bin/unix_chkpwd
+fi
+
+# XDG_RUNTIME_DIR de cada usuário (sem logind, quem cria é o boot)
+mkdir -p /run/user
+chmod 755 /run/user
+awk -F: '$3 >= 1000 && $3 < 30000 { print $3 }' /etc/passwd | while read -r uid; do
+    mkdir -p "/run/user/$uid"
+    chown "$uid" "/run/user/$uid"
+    chmod 700 "/run/user/$uid"
+done

@@ -1,0 +1,22 @@
+#!/bin/sh
+# /etc/rc.shutdown — desligamento (chamado pelo init)
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+. /etc/rc.conf
+
+printf '\033[1;35m*\033[0m %s\n' "Desligando a ShinyOS..."
+
+services=
+for s in $rc_services; do services="$s $services"; done
+for s in $services; do
+    [ -x "/etc/rc.d/$s" ] && /etc/rc.d/$s stop >/dev/null 2>&1
+done
+
+if [ "$hwclock_utc" = YES ]; then hwclock -w -u 2>/dev/null; else hwclock -w -l 2>/dev/null; fi
+
+killall5 -15; sleep 1; killall5 -9
+sync
+swapoff -a 2>/dev/null
+umount -a -r 2>/dev/null
+mount -o remount,ro / 2>/dev/null
+sync

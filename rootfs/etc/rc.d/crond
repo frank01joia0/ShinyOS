@@ -1,0 +1,8 @@
+#!/bin/sh
+. /etc/rc.d/rc.subr
+name=crond
+command=/usr/sbin/crond
+start_cmd() { $command -c /var/spool/cron/crontabs; }
+stop_cmd()  { killall -q crond; }
+status_cmd() { pidof crond >/dev/null; }
+run_rc_command "$1"

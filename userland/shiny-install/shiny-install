@@ -1,0 +1,293 @@
+#!/bin/sh
+# shiny-install — instala a ShinyOS (rodando em modo live) num disco.
+#
+# Layout (tabela MBR, que dá boot tanto em BIOS quanto em UEFI):
+#   partição 1: 512 MiB, FAT32, tipo EF, ativa -> /boot/efi (GRUB, kernel)
+#   partição 2: resto do disco, ext4             -> /
+# O GRUB é instalado para os dois modos: boot.img/core.img no começo do
+# disco (BIOS) e \EFI\BOOT\BOOTX64.EFI (UEFI, com entrada na NVRAM).
+
+set -u
+. /usr/lib/shinyos/ui.sh
+
+SHINY_LIB=/usr/lib/shinyos
+TARGET=/mnt/target
+STEPS=7
+
+cleanup() {
+    for m in "$TARGET/dev/pts" "$TARGET/dev" "$TARGET/proc" "$TARGET/sys" "$TARGET/boot/efi" "$TARGET"; do
+        umount "$m" 2>/dev/null
+    done
+}
+
+die() {
+    printf '\n'
+    ui_warn "$*"
+    ui_warn "A instalação foi interrompida."
+    cleanup
+    exit 1
+}
+
+part_name() {
+    case $1 in
+        *[0-9]) echo "${1}p$2" ;;
+        *)      echo "$1$2" ;;
+    esac
+}
+
+blk_uuid() {
+    blkid "$1" | sed -n 's/.* UUID="\([^"]*\)".*/\1/p'
+}
+
+# ask_password "para quem" -> $PASSWORD
+ask_password() {
+    while :; do
+        printf '  %s?%s Senha %s: ' "$ui_hi" "$ui_off" "$1"
+        read -rs p1; echo
+        if [ -z "$p1" ]; then ui_warn "A senha não pode ser vazia."; continue; fi
+        printf '  %s?%s Repita a senha: ' "$ui_hi" "$ui_off"
+        read -rs p2; echo
+        if [ "$p1" = "$p2" ]; then PASSWORD=$p1; return; fi
+        ui_warn "As senhas não conferem, tente de novo."
+    done
+}
+
+# --- verificações -------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || { ui_warn "Rode como root."; exit 1; }
+[ -e /etc/shinyos/live ] || { ui_warn "O instalador só roda a partir da ShinyOS Live."; exit 1; }
+for f in vmlinuz initrd.img BOOTX64.EFI; do
+    [ -f "$SHINY_LIB/$f" ] || { ui_warn "Arquivo $SHINY_LIB/$f ausente na imagem."; exit 1; }
+done
+has_bios=; [ -f "$SHINY_LIB/bios/core.img" ] && has_bios=1
+has_nix=;  ls "$SHINY_LIB"/nix/nix-*.tar.xz >/dev/null 2>&1 && has_nix=1
+uefi=;     [ -d /sys/firmware/efi ] && uefi=1
+
+# --- 1. disco ------------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 1/$STEPS: disco"
+labels=
+names=
+for d in /sys/block/*; do
+    n=${d##*/}
+    case $n in loop*|ram*|sr*|zram*|fd*) continue ;; esac
+    blkid "/dev/$n" 2>/dev/null | grep -q 'LABEL="SHINYOS_' && continue  # o próprio pendrive
+    size=$(( $(cat "$d/size") / 2048 ))
+    [ "$size" -ge 1024 ] || continue
+    model=$(sed 's/ *$//' "$d/device/model" 2>/dev/null)
+    rem=; [ "$(cat "$d/removable" 2>/dev/null)" = 1 ] && rem=", removível"
+    if [ "$size" -ge 10240 ]; then hsize="$((size / 1024)) GB"; else hsize="$size MB"; fi
+    labels="$labels${labels:+|}/dev/$n — $hsize (${model:-disco}$rem)"
+    names="$names $n"
+done
+[ -n "$names" ] || die "Nenhum disco com pelo menos 1 GB foi encontrado."
+
+ui_say "Em qual disco instalar? ${ui_err}Tudo nele será apagado.${ui_off}"
+echo
+ui_pick_list "Número do disco:" "$labels" "$names"
+disk=$REPLY
+dev=/dev/$disk
+size_mib=$(( $(cat "/sys/block/$disk/size") / 2048 ))
+
+# --- 2. usuário ------------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 2/$STEPS: seu usuário"
+while :; do
+    ui_ask "Seu nome de usuário (minúsculas, sem espaços):"
+    case $REPLY in
+        ''|*[!a-z0-9_-]*|[0-9-]*) ui_warn "Use letras minúsculas, números, _ ou -, começando por letra." ;;
+        root|daemon|nobody|nixbld*) ui_warn "Esse nome é reservado." ;;
+        *) user_new=$REPLY; break ;;
+    esac
+done
+ask_password "de $user_new"
+user_pass=$PASSWORD
+echo
+ui_say "O root é a conta de administração do sistema."
+if ui_yesno "Usar a mesma senha para o root?"; then
+    root_pass=$user_pass
+else
+    ask_password "do root"
+    root_pass=$PASSWORD
+fi
+
+# --- 3. nome da máquina ----------------------------------------------------------
+ui_title "Instalador da ShinyOS — 3/$STEPS: nome da máquina"
+while :; do
+    ui_ask "Nome deste computador na rede:" shinyos
+    case $REPLY in
+        *[!A-Za-z0-9-]*|-*) ui_warn "Use só letras, números e hífen." ;;
+        *) hostname_new=$REPLY; break ;;
+    esac
+done
+
+# --- 4. teclado --------------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 4/$STEPS: teclado"
+ui_pick_list "Layout do teclado:" "$UI_KEYMAP_NAMES" "$UI_KEYMAP_VALUES"
+keymap_new=$REPLY
+
+# --- 5. fuso horário -----------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 5/$STEPS: fuso horário"
+ui_pick_list "Fuso horário:" "$UI_TZ_NAMES" "$UI_TZ_VALUES"
+tz_new=$REPLY
+
+# --- 6. pacotes e desktop -------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 6/$STEPS: programas e desktop"
+install_nix=
+install_desktop=
+if [ -n "$has_nix" ]; then
+    ui_say "O Nix permite instalar milhares de programas com: pkg install <nome>"
+    ui_say "Ocupa uns 150 MB. Dá para instalar depois com: sudo pkg setup"
+    echo
+    ui_yesno "Instalar o gerenciador de pacotes Nix?" && install_nix=1
+else
+    ui_say "Esta imagem não traz o Nix; pulando."
+fi
+if [ -n "$install_nix" ]; then
+    echo
+    ui_say "O desktop ${ui_b}KDE Plasma${ui_off} (com Firefox, Dolphin, Konsole...) baixa uns 3 GB."
+    if ! /sbin/ip route | grep -q '^default' && ls /sys/class/net/*/wireless >/dev/null 2>&1; then
+        ui_yesno "Você está sem internet. Conectar ao Wi-Fi agora?" && wifi
+    fi
+    if /sbin/ip route | grep -q '^default'; then
+        [ "$size_mib" -ge 20000 ] || ui_warn "Recomendado: disco com 20 GB ou mais para o desktop."
+        ui_yesno "Instalar o KDE Plasma?" && install_desktop=1
+    else
+        ui_say "Sem internet: dá para instalar o KDE depois com: sudo shiny-desktop install"
+    fi
+fi
+
+# --- 7. resumo -------------------------------------------------------------------------
+ui_title "Instalador da ShinyOS — 7/$STEPS: confirmar"
+printf '    Disco ............ %s (%s MB) %sSERÁ APAGADO%s\n' "$dev" "$size_mib" "$ui_err" "$ui_off"
+printf '    Usuário .......... %s\n' "$user_new"
+printf '    Nome da máquina .. %s\n' "$hostname_new"
+printf '    Teclado .......... %s\n' "$keymap_new"
+printf '    Fuso horário ..... %s\n' "$tz_new"
+printf '    Nix .............. %s\n' "$([ -n "$install_nix" ] && echo sim || echo não)"
+printf '    KDE Plasma ....... %s\n' "$([ -n "$install_desktop" ] && echo 'sim (baixa ~3 GB)' || echo não)"
+printf '    Boot ............. %s\n' "$([ -n "$has_bios" ] && echo 'UEFI e BIOS' || echo UEFI)"
+echo
+ui_ask "Digite ${ui_b}sim${ui_off} para apagar $dev e instalar:"
+[ "$REPLY" = sim ] || [ "$REPLY" = SIM ] || { ui_say "Instalação cancelada. Nada foi alterado."; exit 1; }
+
+# =================================================================================
+ui_step 1/6 "Particionando $dev"
+for p in $(grep -oE "^/dev/${disk}p?[0-9]+" /proc/mounts); do umount "$p"; done
+dd if=/dev/zero of="$dev" bs=1M count=4 conv=fsync 2>/dev/null
+# o=nova tabela MBR, n=nova partição, t=tipo, a=ativa, w=gravar. Os setores são
+# explícitos: o fdisk do BusyBox sugeriria o buraco antes do setor 2048.
+esp_start=2048
+esp_sectors=$((512 * 2048))
+root_start=$((esp_start + esp_sectors))
+printf 'o\nn\np\n1\n%s\n+%s\nt\nef\nn\np\n2\n%s\n\na\n1\nw\n' \
+    "$esp_start" "$((esp_sectors - 1))" "$root_start" | fdisk -u "$dev" >/dev/null 2>&1
+# Assinatura do disco (usada pela entrada de boot UEFI)
+dd if=/dev/urandom of="$dev" bs=1 seek=440 count=4 conv=notrunc 2>/dev/null
+blockdev --rereadpt "$dev" 2>/dev/null
+sleep 1
+mdev -s
+
+esp=$(part_name "$dev" 1)
+root=$(part_name "$dev" 2)
+[ -b "$esp" ] && [ -b "$root" ] || die "Falha ao particionar $dev."
+root_mib=$(( $(cat "/sys/class/block/${root#/dev/}/size") / 2048 ))
+[ "$root_mib" -ge 256 ] || die "Partição raiz ficou com só $root_mib MB; particionamento falhou."
+
+ui_step 2/6 "Formatando (FAT32 + ext4)"
+mkfs.vfat -F 32 -n SHINYEFI "$esp" >/dev/null || die "mkfs.vfat falhou"
+mkfs.ext4 -q -F -L SHINYROOT "$root" >/dev/null || die "mkfs.ext4 falhou"
+
+ui_step 3/6 "Copiando o sistema"
+mkdir -p "$TARGET"
+mount -t ext4 "$root" "$TARGET" || die "Não consegui montar $root"
+mkdir -p "$TARGET/boot/efi"
+mount -t vfat "$esp" "$TARGET/boot/efi" || die "Não consegui montar $esp"
+for d in bin sbin usr lib etc root home var opt srv; do
+    [ -e "/$d" ] || continue
+    cp -a "/$d" "$TARGET/" || die "Falha ao copiar /$d"
+done
+for d in proc sys dev run tmp mnt media; do mkdir -p "$TARGET/$d"; done
+chmod 1777 "$TARGET/tmp"
+rm -f "$TARGET/etc/shinyos/live" "$TARGET/root/.ash_history"
+rm -rf "$TARGET/var/log/"* "$TARGET/var/spool/cron/crontabs/"* "$TARGET/var/tmp/"*
+
+ui_step 4/6 "Configurando"
+uuid_root=$(blk_uuid "$root")
+uuid_esp=$(blk_uuid "$esp")
+[ -n "$uuid_root" ] || die "Não consegui ler o UUID de $root"
+cat >> "$TARGET/etc/fstab" <<EOF
+UUID=$uuid_root  /         ext4  defaults,noatime  0 1
+UUID=$uuid_esp   /boot/efi vfat  defaults,umask=0077  0 2
+EOF
+echo "$hostname_new" > "$TARGET/etc/hostname"
+ui_rcconf_set keymap "$keymap_new" "$TARGET/etc/rc.conf"
+ui_rcconf_set timezone "$tz_new" "$TARGET/etc/rc.conf"
+
+printf 'root:%s\n' "$root_pass" | chroot "$TARGET" chpasswd -c sha512 >/dev/null 2>&1 ||
+    die "Não consegui definir a senha do root"
+chroot "$TARGET" adduser -D -s /bin/sh -G users "$user_new" || die "Não consegui criar $user_new"
+for g in wheel audio video input; do chroot "$TARGET" addgroup "$user_new" "$g" 2>/dev/null; done
+printf '%s:%s\n' "$user_new" "$user_pass" | chroot "$TARGET" chpasswd -c sha512 >/dev/null 2>&1 ||
+    die "Não consegui definir a senha de $user_new"
+unset PASSWORD user_pass root_pass p1 p2
+ui_ok "Usuário $user_new criado (administrador: pode usar sudo)"
+
+ui_step 5/6 "Instalando o carregador de boot"
+mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/shinyos"
+cp "$SHINY_LIB/BOOTX64.EFI" "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI" &&
+cp "$SHINY_LIB/vmlinuz" "$TARGET/boot/efi/shinyos/vmlinuz" &&
+cp "$SHINY_LIB/initrd.img" "$TARGET/boot/efi/shinyos/initrd.img" ||
+    die "Falha ao copiar os arquivos de boot para $esp"
+. /etc/os-release
+cat > "$TARGET/boot/efi/EFI/BOOT/grub.cfg" <<EOF
+set timeout=3
+set default=0
+
+menuentry "$PRETTY_NAME" {
+    linux /shinyos/vmlinuz root=UUID=$uuid_root rw quiet loglevel=3
+    initrd /shinyos/initrd.img
+}
+
+menuentry "$PRETTY_NAME (shell de resgate)" {
+    linux /shinyos/vmlinuz root=UUID=$uuid_root rw shiny.rescue
+    initrd /shinyos/initrd.img
+}
+EOF
+if [ -n "$has_bios" ]; then
+    # boot.img só nos primeiros 440 bytes: preserva assinatura e tabela de partições
+    dd if="$SHINY_LIB/bios/boot.img" of="$dev" bs=440 count=1 conv=notrunc 2>/dev/null &&
+    dd if="$SHINY_LIB/bios/core.img" of="$dev" bs=512 seek=1 conv=notrunc 2>/dev/null ||
+        die "Falha ao gravar o GRUB (BIOS)"
+    ui_ok "GRUB para BIOS"
+fi
+ui_ok "GRUB para UEFI"
+if [ -n "$uefi" ]; then
+    if shiny-efiboot "$dev" 1 '\EFI\BOOT\BOOTX64.EFI' ShinyOS >/dev/null; then
+        ui_ok "Entrada \"ShinyOS\" adicionada ao menu de boot do UEFI"
+    else
+        ui_warn "Não consegui criar a entrada no UEFI; o boot usará o caminho padrão."
+    fi
+fi
+sync
+
+if [ -n "$install_nix" ]; then
+    ui_step 6/6 "Instalando o Nix (pode levar um minuto)"
+    mount --bind /dev "$TARGET/dev"
+    mount -t devpts devpts "$TARGET/dev/pts"
+    mount -t proc proc "$TARGET/proc"
+    mount -t sysfs sysfs "$TARGET/sys"
+    chroot "$TARGET" /usr/sbin/shiny-nix-setup || { ui_warn "O Nix falhou; dá para tentar depois com: sudo pkg setup"; install_desktop=; }
+    if [ -n "$install_desktop" ]; then
+        ui_step 6/6 "Baixando e instalando o KDE Plasma (pode levar bastante tempo)"
+        cp /etc/resolv.conf "$TARGET/etc/resolv.conf"
+        SHINY_CHROOT=1 chroot "$TARGET" /usr/sbin/shiny-desktop install ||
+            ui_warn "O KDE falhou; dá para tentar depois com: sudo shiny-desktop install"
+    fi
+else
+    ui_step 6/6 "Nix: pulado (instale depois com: pkg setup)"
+fi
+
+sync
+cleanup
+printf '\n'
+ui_ok "${ui_b}A ShinyOS foi instalada em $dev!${ui_off}"
+ui_say "Remova o pendrive/CD e reinicie (comando: reboot)."
+ui_say "Depois, entre como ${ui_b}$user_new${ui_off}. O menu de configurações abre com: shiny"

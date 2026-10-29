@@ -1,123 +1,129 @@
-# LunairOS
+# ShinyOS ✦
 
 ### Português • [English](README.en.md)
 
-LunairOS é uma distribuição Linux independente focada em trazer o esqueumorfismo de forma moderna, mantendo estabilidade e incorporando parte da filosofia BSD.
+ShinyOS é uma distribuição Linux independente, construída do zero (kernel Linux + BusyBox + userland próprio), com inspiração na filosofia BSD: um sistema base pequeno, configurado por `/etc/rc.conf` e scripts em `/etc/rc.d`.
+
+A ShinyOS é a continuação da **LunairOS**, distro que foi descontinuada. Obrigado à autora original pela base. 💜
 
 ## Atual lançamento
 
-**LunairOS 0.1.1 "Turmoil"**
+**ShinyOS 0.2.0 "Glimmer"**
 
-## Status
+## O que funciona
 
-Atualmente, o sistema:
-- Compila um kernel Linux customizado
-- Constrói uma initramfs baseada em BusyBox
-- Inclui um pequeno userland próprio
-- Gera uma imagem ISO bootável com GRUB
-- Pode ser testado no QEMU
+- Kernel Linux 6.18 LTS, NVMe/SATA/USB/virtio, GPUs Intel/AMD, áudio
+- **Desktop KDE Plasma 6** (Wayland), com Dolphin, Konsole, Kate, Firefox e o tema
+  esqueumórfico Oxygen disponível — instalado pelo Nix com `sudo shiny-desktop install`
+  ou direto no instalador
+- **Wi-Fi**: Intel, Realtek, MediaTek, Atheros e Broadcom; conecte com o comando `wifi`
+- **sudo** para os usuários administradores (grupo `wheel`)
+- Boot **live** com menu de boas-vindas (entra sozinho, sem senha)
+- **Instalador guiado** (`shiny-install`): escolhe disco, usuário, senha, teclado e fuso por menus;
+  instala o GRUB para **UEFI e BIOS** e registra a entrada "ShinyOS" no menu de boot do UEFI
+- **Pacotes via Nix**: `pkg install htop` — acesso a mais de 100 mil programas do nixpkgs,
+  cada usuário com seus próprios pacotes
+- Menu de configurações `shiny`: usuários, senhas, rede, teclado, fuso, serviços, pacotes
+- Rede cabeada automática via DHCP, DNS, sincronia de relógio (ntpd)
+- Serviços estilo BSD: `/etc/rc.conf`, `service -l`, `service network restart`
+- `shinyfetch` (o antigo `lunafetch` também funciona como apelido)
+
+## Limitações
+
+- Não há tela de login gráfica: entre no `tty1` com seu usuário e o Plasma abre sozinho
+- Placas NVIDIA não têm driver (só Intel, AMD e virtuais)
+- Redes Wi-Fi corporativas (eduroam) ainda são configuradas à mão
+- O desktop KDE precisa de internet para instalar (~3 GB)
 
 ## Dependências
 
-### Ferramentas necessárias para construir a ISO
+### Arch / CachyOS
 
-- GRUB
-- xorriso
-- mtools
-- cpio
-- gzip
-- file
+```sh
+make install-deps-arch
+```
 
-### Ferramentas necessárias para compilar o kernel
-
-- gcc ou clang
-- make
-- bc
-- bison
-- flex
-- OpenSSL
-- libelf
-- dwarves
-
-### Dependências adicionais
-
-- BusyBox estático
-- musl-tools
-- wget
-- tar
-- xz
-
-## Instalar dependências (Debian/Ubuntu)
+### Debian / Ubuntu
 
 ```sh
 make install-deps-debian
 ```
 
-## Compilar o sistema
-
-### Compilar apenas o userland
-
-```sh
-make builduserland
-```
-
-### Construir a initramfs
-
-```sh
-make buildworld
-```
-
-### Construir a release completa
+## Compilar
 
 ```sh
 make release
 ```
 
-Isso irá:
-- Verificar dependências
-- Compilar o kernel
-- Construir o userland
-- Gerar a initramfs
-- Criar a ISO bootável
+Isso baixa e compila o kernel e o BusyBox, compila o userland, monta o sistema e gera `build/ShinyOS-Glimmer-0.2.0.iso`. Não precisa de root.
 
-## Executar no QEMU
+Gravar num pendrive (cuidado com o `of=`!):
 
 ```sh
-make run
+sudo dd if=build/ShinyOS-Glimmer-0.2.0.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-## Limpeza
-
-### Limpar arquivos intermediários
+## Testar no QEMU
 
 ```sh
-make clean
+make run           # ISO live, BIOS
+make run-uefi      # ISO live, UEFI
+make run-install   # ISO + disco virtual de 8 GB, para testar o shiny-install
+make run-disk      # dá boot no disco virtual depois de instalar
 ```
 
-### Remover toda a pasta de build
+## Usando o sistema
 
-```sh
-make distclean
-```
+| Tarefa | Comando |
+| --- | --- |
+| Menu de configurações | `shiny` |
+| Conectar ao Wi-Fi | `wifi` |
+| Instalar o KDE Plasma | `sudo shiny-desktop install` |
+| Abrir o KDE manualmente | `shiny-session` |
+| Comando como administrador | `sudo comando` |
+| Instalar programas | `pkg install htop` |
+| Procurar / listar / remover | `pkg search editor` · `pkg list` · `pkg remove htop` |
+| Informações do sistema | `shinyfetch` |
+| Instalar no disco (modo live) | `shiny-install` |
+| Serviços | `service -l` · `service network restart` |
+| Configuração manual | `vi /etc/rc.conf` |
+| Desligar / reiniciar | `poweroff` / `reboot` |
 
 ## Estrutura do projeto
 
 ```text
-kernel/        - Build e configuração do kernel Linux
-initramfs/     - Estrutura da initramfs
-userland/      - Programas do userland
-iso/           - Geração da ISO e configuração do GRUB
-build/         - Arquivos gerados durante a build
+configs/       - configs do kernel e do BusyBox (+ fragmentos da ShinyOS)
+kernel/        - build do kernel Linux
+busybox/       - build do BusyBox (estático, musl)
+userland/      - programas da ShinyOS (shinyfetch, shiny-install, shiny-efiboot)
+ports/         - receitas do sistema base: sudo, wpa_supplicant (+OpenSSL, libnl), firmware
+rootfs/        - arquivos do sistema (/etc, rc.d, scripts)
+initramfs/     - /init de boot (modo live e sistema instalado)
+iso/           - GRUB e geração da ISO
+scripts/       - scripts de build
+build/         - arquivos gerados
 ```
+
+## Roadmap
+
+1. ✅ Sistema de terminal usável, instalável (UEFI e BIOS)
+2. ✅ Gerenciador de pacotes (`pkg`, sobre o Nix)
+3. ✅ Wi-Fi e sudo
+4. ✅ KDE Plasma (via Nix)
+5. Tela de login gráfica, Bluetooth, eduroam pelo menu
+6. Tema esqueumórfico próprio da ShinyOS
 
 ## Licença
 
-LunairOS é licenciado sob a GNU General Public License v3.0 (GPLv3).
+ShinyOS é licenciada sob a GNU General Public License v3.0 (GPLv3).
 
 ## Software de terceiros
 
-LunairOS utiliza:
-
 - Kernel Linux (GPLv2)
 - BusyBox (GPLv2)
-- GRUB
+- GRUB (GPLv3)
+- musl libc (MIT)
+- Nix (LGPL-2.1)
+- sudo (ISC), wpa_supplicant (BSD), OpenSSL (Apache-2.0), libnl (LGPL-2.1)
+- linux-firmware (várias licenças, veja WHENCE)
+- KDE Plasma e aplicativos (GPL/LGPL, baixados do nixpkgs)

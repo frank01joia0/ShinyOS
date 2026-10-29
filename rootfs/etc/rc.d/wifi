@@ -1,0 +1,47 @@
+#!/bin/sh
+# Wi-Fi: wpa_supplicant + DHCP em toda interface sem fio. Configure com: wifi
+. /etc/rc.d/rc.subr
+name=wifi
+conf=/etc/wpa_supplicant/wpa_supplicant.conf
+
+interfaces() {
+    for i in /sys/class/net/*; do
+        [ -d "$i/wireless" ] || [ -d "$i/phy80211" ] && echo "${i##*/}"
+    done
+}
+
+start_cmd() {
+    rfkill unblock wifi 2>/dev/null
+    found=1
+    for i in $(interfaces); do
+        ip link set "$i" up
+        wpa_supplicant -B -s -i "$i" -c "$conf" -P "/run/wpa_supplicant.$i.pid" || continue
+        udhcpc -b -S -A 3 -i "$i" -p "/run/udhcpc.$i.pid" -s /usr/share/udhcpc/default.script >/dev/null 2>&1
+        found=0
+    done
+    [ $found -eq 0 ] || { echo "  (nenhuma placa Wi-Fi encontrada)"; return 0; }
+}
+
+stop_cmd() {
+    for i in $(interfaces); do
+        for p in "/run/udhcpc.$i.pid" "/run/wpa_supplicant.$i.pid"; do
+            [ -f "$p" ] && kill "$(cat "$p")" 2>/dev/null
+            rm -f "$p"
+        done
+        ip addr flush dev "$i" 2>/dev/null
+    done
+    return 0
+}
+
+status_cmd() {
+    ok=1
+    for i in $(interfaces); do
+        st=$(wpa_cli -i "$i" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+        ssid=$(wpa_cli -i "$i" status 2>/dev/null | sed -n 's/^ssid=//p')
+        echo "$i: ${st:-desligado}${ssid:+ ($ssid)}"
+        [ "$st" = COMPLETED ] && ok=0
+    done
+    return $ok
+}
+
+run_rc_command "$1"

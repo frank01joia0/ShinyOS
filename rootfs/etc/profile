@@ -1,0 +1,22 @@
+# /etc/profile
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+[ -r /run/shinyos/tz ] && . /run/shinyos/tz && export TZ
+export PAGER=less EDITOR=vi
+export HISTFILE="$HOME/.ash_history"
+umask 022
+
+if [ "$(id -u)" -eq 0 ]; then
+    PS1='\[\e[1;31m\]\u\[\e[0m\]@\[\e[1;35m\]\h\[\e[0m\]:\w# '
+else
+    PS1='\[\e[1;32m\]\u\[\e[0m\]@\[\e[1;35m\]\h\[\e[0m\]:\w$ '
+fi
+export PS1
+
+alias ls='ls --color=auto' ll='ls -lh' la='ls -lAh' grep='grep --color=auto'
+
+for f in /etc/profile.d/*.sh; do
+    [ -r "$f" ] && . "$f"
+done
+unset f
+
+[ -f "$HOME/.profile.local" ] && . "$HOME/.profile.local"

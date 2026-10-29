@@ -1,0 +1,50 @@
+#!/bin/sh
+# Rede cabeada via DHCP (udhcpc). O Wi-Fi fica no serviço "wifi".
+. /etc/rc.d/rc.subr
+name=network
+
+interfaces() {
+    if [ "${network_interfaces:-auto}" = auto ]; then
+        for i in /sys/class/net/*; do
+            i=${i##*/}
+            [ "$i" = lo ] && continue
+            [ -d "/sys/class/net/$i/wireless" ] && continue
+            [ -d "/sys/class/net/$i/phy80211" ] && continue
+            # só placas Ethernet de verdade (ARPHRD_ETHER), nada de túneis/pontes
+            [ "$(cat "/sys/class/net/$i/type" 2>/dev/null)" = 1 ] || continue
+            [ -e "/sys/class/net/$i/device" ] || continue
+            echo "$i"
+        done
+    else
+        echo $network_interfaces
+    fi
+}
+
+start_cmd() {
+    found=1
+    for i in $(interfaces); do
+        ip link set "$i" up
+        udhcpc -b -S -A 5 -i "$i" -p "/run/udhcpc.$i.pid" -s /usr/share/udhcpc/default.script >/dev/null 2>&1
+        found=0
+    done
+    return $found
+}
+
+stop_cmd() {
+    for i in $(interfaces); do
+        p=/run/udhcpc.$i.pid
+        [ -f "$p" ] && kill "$(cat "$p")" 2>/dev/null
+        rm -f "$p"
+        ip addr flush dev "$i"
+        ip link set "$i" down
+    done
+    return 0
+}
+
+status_cmd() {
+    ip -4 addr show | grep -E '^[0-9]+:|inet '
+    for i in $(interfaces); do [ -f "/run/udhcpc.$i.pid" ] && return 0; done
+    return 1
+}
+
+run_rc_command "$1"

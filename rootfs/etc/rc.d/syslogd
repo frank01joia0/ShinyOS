@@ -1,0 +1,9 @@
+#!/bin/sh
+. /etc/rc.d/rc.subr
+name=syslogd
+command=/sbin/syslogd
+command_args="-S -O /var/log/messages -s 512 -b 4"
+start_cmd() { $command $command_args; }
+stop_cmd()  { killall -q syslogd; }
+status_cmd() { pidof syslogd >/dev/null; }
+run_rc_command "$1"

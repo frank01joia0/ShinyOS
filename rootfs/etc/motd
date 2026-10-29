@@ -1,0 +1,10 @@
+
+  Bem-vindo(a) à ShinyOS ✦
+
+    shiny            menu de configurações (usuários, rede, teclado...)
+    pkg install X    instala programas (ex.: pkg install htop)
+    wifi             conecta ao Wi-Fi
+    sudo comando     roda um comando como administrador
+    shinyfetch       informações do sistema
+    poweroff         desliga          reboot   reinicia
+

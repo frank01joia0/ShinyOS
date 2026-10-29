@@ -1,0 +1,107 @@
+#!/bin/sh
+# pkg — gerenciador de pacotes da ShinyOS (usa o Nix e o repositório nixpkgs)
+
+. /usr/lib/shinyos/ui.sh
+
+NIX_PROFILE_SH=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+usage() {
+    cat <<EOF
+
+  ${ui_hi}pkg${ui_off} — instala programas na ShinyOS (via Nix, mais de 100 mil pacotes)
+
+    ${ui_b}pkg install${ui_off} <nome>...    instala (ex.: pkg install htop git python3)
+    ${ui_b}pkg remove${ui_off} <nome>...     remove
+    ${ui_b}pkg list${ui_off}                 lista o que você instalou
+    ${ui_b}pkg search${ui_off} <termo>       procura pacotes (usa bastante memória)
+    ${ui_b}pkg upgrade${ui_off}              atualiza tudo que você instalou
+    ${ui_b}pkg clean${ui_off}                apaga versões antigas e libera espaço
+    ${ui_b}sudo pkg setup${ui_off}           instala o Nix (uma vez)
+
+  Cada usuário tem seus próprios pacotes. Procure nomes em: https://search.nixos.org
+
+EOF
+}
+
+need_nix() {
+    if [ ! -r "$NIX_PROFILE_SH" ]; then
+        ui_warn "O Nix ainda não está instalado."
+        if [ "$(id -u)" -eq 0 ]; then
+            ui_say "Instale com: ${ui_b}pkg setup${ui_off}"
+        else
+            ui_say "Instale com: ${ui_b}sudo pkg setup${ui_off}"
+        fi
+        exit 1
+    fi
+    command -v nix >/dev/null 2>&1 || . "$NIX_PROFILE_SH"
+    if [ "$(id -u)" -ne 0 ] && [ ! -S /nix/var/nix/daemon-socket/socket ]; then
+        ui_warn "O nix-daemon não está rodando. Peça ao root: service nixdaemon start"
+        exit 1
+    fi
+}
+
+need_net() {
+    /sbin/ip route 2>/dev/null | grep -q '^default' && return 0
+    ui_warn "Sem conexão de rede. Verifique o cabo e rode (como root): service network restart"
+    exit 1
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+
+case $cmd in
+    install|add|i)
+        [ $# -gt 0 ] || { ui_warn "Diga o que instalar. Ex.: pkg install htop"; exit 1; }
+        need_nix; need_net
+        for p in "$@"; do
+            ui_say "Instalando $p..."
+            if nix profile add "nixpkgs#$p"; then
+                ui_ok "$p instalado."
+            else
+                ui_warn "Não consegui instalar '$p'. Confira o nome com: pkg search $p"
+                rc=1
+            fi
+        done
+        exit ${rc:-0}
+        ;;
+    remove|rm|uninstall)
+        [ $# -gt 0 ] || { ui_warn "Diga o que remover. Ex.: pkg remove htop"; exit 1; }
+        need_nix
+        nix profile remove "$@" && ui_ok "Removido: $*"
+        ;;
+    list|ls)
+        need_nix
+        out=$(nix profile list 2>/dev/null | sed -n 's/^Name:[[:space:]]*//p')
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g; s/^/  • /'
+        else
+            ui_say "Nenhum pacote instalado ainda. Tente: pkg install htop"
+        fi
+        ;;
+    search|s)
+        [ $# -gt 0 ] || { ui_warn "Diga o que procurar. Ex.: pkg search editor"; exit 1; }
+        need_nix; need_net
+        ui_say "Procurando (a primeira busca demora e usa ~1,5 GB de RAM)..."
+        nix search nixpkgs "$@"
+        ;;
+    upgrade|update|up)
+        need_nix; need_net
+        nix profile upgrade --all && ui_ok "Tudo atualizado."
+        ;;
+    clean|gc)
+        need_nix
+        nix profile wipe-history >/dev/null 2>&1
+        nix-collect-garbage -d
+        ;;
+    setup)
+        exec /usr/sbin/shiny-nix-setup
+        ;;
+    help|-h|--help|ajuda)
+        usage
+        ;;
+    *)
+        ui_warn "Comando desconhecido: $cmd"
+        usage
+        exit 1
+        ;;
+esac

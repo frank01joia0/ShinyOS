@@ -1,0 +1,84 @@
+#!/bin/sh
+# /etc/rc — inicialização do sistema (chamado pelo init no sysinit)
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+. /etc/rc.conf
+
+msg() { printf '\033[1;35m*\033[0m %s\n' "$*"; }
+
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys  || mount -t sysfs sysfs /sys
+mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+# links que o devtmpfs não cria (bash, Nix e outros usam /dev/fd)
+ln -sfn /proc/self/fd /dev/fd
+ln -sf /proc/self/fd/0 /dev/stdin
+ln -sf /proc/self/fd/1 /dev/stdout
+ln -sf /proc/self/fd/2 /dev/stderr
+mount -t devpts -o gid=5,mode=620 devpts /dev/pts
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run
+mkdir -p /sys/fs/cgroup
+mountpoint -q /sys/fs/cgroup || mount -t cgroup2 -o nsdelegate cgroup2 /sys/fs/cgroup 2>/dev/null
+[ -d /sys/firmware/efi/efivars ] && mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+
+msg "Montando sistemas de arquivos"
+mount -o remount,rw / 2>/dev/null
+mount -a
+mkdir -p /run/shinyos /var/log /var/spool/cron/crontabs
+mkdir -p /tmp/.X11-unix /tmp/.ICE-unix
+chmod 1777 /tmp/.X11-unix /tmp/.ICE-unix
+
+msg "Iniciando mdev (hotplug)"
+mdev -s
+# daemon: recebe eventos do kernel (pendrive, Wi-Fi USB...) e carrega drivers
+mdev -d
+
+# Modo live: o firmware (Wi-Fi, GPUs) fica na própria mídia, fora da RAM
+if [ -e /etc/shinyos/live ]; then
+    mkdir -p /run/shinyos/media
+    i=0
+    while [ $i -lt 20 ]; do
+        media=$(blkid | grep 'LABEL="SHINYOS_' | grep 'TYPE="iso9660"' | head -n1 | cut -d: -f1)
+        [ -n "$media" ] && break
+        sleep 0.5; i=$((i + 1))
+    done
+    if [ -n "$media" ] && mount -t iso9660 -o ro "$media" /run/shinyos/media 2>/dev/null; then
+        [ -d /run/shinyos/media/firmware ] && mount --bind /run/shinyos/media/firmware /lib/firmware
+    else
+        msg "Mídia de instalação não encontrada: sem firmware para Wi-Fi/GPU"
+    fi
+fi
+
+msg "Carregando drivers"
+find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | xargs modprobe -qab 2>/dev/null
+sleep 1
+
+[ -s /etc/modules ] && grep -v '^#' /etc/modules | while read -r m args; do
+    [ -n "$m" ] && modprobe "$m" $args
+done
+
+/usr/libexec/shinyos/desktop-runtime
+
+hostname -F /etc/hostname
+ifconfig lo 127.0.0.1 up
+
+echo "TZ=$timezone" > /run/shinyos/tz
+export TZ="$timezone"    # herdado pelos serviços (syslogd, crond...)
+if [ "$hwclock_utc" = YES ]; then hwclock -s -u 2>/dev/null; else hwclock -s -l 2>/dev/null; fi
+
+if [ -n "$keymap" ] && [ -f "/usr/share/keymaps/$keymap.bmap" ]; then
+    msg "Teclado: $keymap"
+    loadkmap < "/usr/share/keymaps/$keymap.bmap"
+fi
+
+dmesg -n 3
+echo 1 > /proc/sys/kernel/printk_ratelimit 2>/dev/null
+
+for s in $rc_services; do
+    eval enabled=\$${s}_enable
+    [ "$enabled" = YES ] && [ -x "/etc/rc.d/$s" ] && /etc/rc.d/$s start
+done
+
+[ -x /etc/rc.local ] && /etc/rc.local
+
