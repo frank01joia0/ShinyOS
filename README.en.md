@@ -1,96 +1,159 @@
 # ShinyOS ✦
 
-### [Português](README.md) • English
+[Português](README.md) • **English**
 
-ShinyOS is an independent Linux distribution built from scratch (Linux kernel + BusyBox + its own userland), inspired by the BSD philosophy: a small base system configured through `/etc/rc.conf` and scripts in `/etc/rc.d`.
+An independent Linux distro built from scratch, with KDE Plasma and a friendly face.
 
-ShinyOS is the continuation of **LunairOS**, a discontinued distro. Thanks to its original author for the foundation. 💜
+![ShinyOS with KDE Plasma](docs/screenshot.png)
 
-## Current release
+ShinyOS isn't based on any other distro. It brings together:
 
-**ShinyOS 0.2.0 "Glimmer"**
+- the Linux kernel and BusyBox, compiled right here;
+- a small BSD-style base system (`/etc/rc.conf` + `/etc/rc.d`);
+- **Nix** for installing software, and the **KDE Plasma 6** desktop.
 
-## What works
+It carries on **LunairOS**, a friend's distro that was discontinued. Thank you for the foundation. 💜
 
-- Linux 6.18 LTS kernel, NVMe/SATA/USB/virtio, Intel/AMD GPUs, audio
-- **KDE Plasma 6 desktop** (Wayland) with Dolphin, Konsole, Kate, Firefox and the skeuomorphic
-  Oxygen theme available — installed through Nix with `sudo shiny-desktop install` or in the installer
-- **Wi-Fi**: Intel, Realtek, MediaTek, Atheros and Broadcom; connect with the `wifi` command
-- **sudo** for administrator users (`wheel` group)
-- **Live** boot with a welcome menu (automatic login)
-- **Guided installer** (`shiny-install`): disk, user, password, keyboard and time zone through menus;
-  installs GRUB for **UEFI and BIOS** and registers a "ShinyOS" UEFI boot entry
-- **Packages via Nix**: `pkg install htop` — 100k+ programs from nixpkgs, per-user
-- `shiny` settings menu: users, passwords, network, keyboard, time zone, services, packages
-- Automatic wired networking via DHCP, DNS, clock sync (ntpd)
-- BSD-style services: `/etc/rc.conf`, `service -l`, `service network restart`
-- `shinyfetch` (the old `lunafetch` still works as an alias)
+**Current release:** 0.2.0 "Glimmer"
 
-## Limitations
+---
 
-- No graphical login screen: log in on `tty1` with your user and Plasma starts automatically
-- No NVIDIA driver (Intel, AMD and virtual GPUs only)
-- Enterprise Wi-Fi (eduroam) still needs manual configuration
-- The KDE desktop needs internet to install (~3 GB)
+## Highlights
 
-## Dependencies
+- 🖥️ **KDE Plasma 6** (Wayland) with Dolphin, Konsole, Kate, Okular, Gwenview, Firefox and the Oxygen theme
+- 📶 **Wi-Fi** through the `wifi` command, with WPA2 and WPA3. Works with Intel, Realtek, MediaTek, Atheros and Broadcom cards
+- 🔐 **sudo** for administrators (the `wheel` group)
+- 📦 **100k+ programs** through Nix: `pkg install htop`
+- 💿 **Guided installer** (in Portuguese):
+  - picks the disk, user, keyboard and time zone through menus;
+  - works on **UEFI and BIOS** machines.
+- ⚙️ **`shiny` menu** for Wi-Fi, users, passwords, network, keyboard, time zone, services and packages
+- 🛟 **ext4 disk**, checked automatically on every boot
+- 🌙 **Live mode**: try it from a USB stick without installing anything
+
+## Installing
+
+1. Download or build the ISO (see below).
+2. Write it to a USB stick. **Double-check `/dev/sdX`**: the chosen disk gets erased.
+
+   ```sh
+   sudo dd if=ShinyOS-Glimmer-0.2.0.iso of=/dev/sdX bs=4M status=progress conv=fsync
+   ```
+
+3. Boot from the stick. The welcome menu opens by itself.
+4. If you need internet, choose **Conectar ao Wi-Fi** (wired works automatically).
+5. Choose **Instalar a ShinyOS no computador** and answer the questions.
+6. Reboot and log in with your user. KDE Plasma starts by itself.
+
+**Requirements:**
+- 64-bit (x86_64);
+- 2 GB of RAM (4 GB recommended);
+- 20 GB of disk;
+- internet to install KDE (about 1.7 GB download).
+
+## Using it
+
+| I want to… | Command |
+| --- | --- |
+| Open the settings menu | `shiny` |
+| Connect to Wi-Fi | `wifi` |
+| Install a program | `pkg install vlc` |
+| Search, list or remove programs | `pkg search editor` · `pkg list` · `pkg remove vlc` |
+| Run something as administrator | `sudo command` |
+| Install KDE later | `sudo shiny-desktop install` |
+| Start KDE by hand | `shiny-session` |
+| Show system info | `shinyfetch` |
+| List and control services | `service -l` · `sudo service wifi restart` |
+| Power off or reboot | `poweroff` · `reboot` |
+
+System settings live in `/etc/rc.conf`, BSD-style:
 
 ```sh
-make install-deps-arch     # Arch / CachyOS
-make install-deps-debian   # Debian / Ubuntu
+hostname="brilho"
+keymap="br-abnt2"
+timezone="America/Sao_Paulo"
+wifi_enable="YES"
+desktop_autostart="YES"
 ```
 
-## Build
+## Known limitations
+
+- There's no graphical login screen: Plasma starts when you log in on `tty1`.
+- There's no driver for **NVIDIA** GPUs yet. Intel, AMD and virtual machines work.
+- Enterprise Wi-Fi (eduroam) must be configured by hand.
+- Bluetooth doesn't work yet.
+- So far it has only been tested in virtual machines. Reports from real hardware are very welcome!
+
+---
+
+## Building
+
+No root needed. First install the dependencies:
+
+```sh
+make install-deps-arch     # Arch, CachyOS, Manjaro
+make install-deps-debian   # Debian, Ubuntu, Mint
+```
+
+Then:
 
 ```sh
 make release
 ```
 
-This downloads and builds the kernel and BusyBox, builds the userland, assembles the system and produces `build/ShinyOS-Glimmer-0.2.0.iso`. No root required.
+This downloads and compiles the kernel, BusyBox, sudo, wpa_supplicant and the rest of the base system, producing `build/ShinyOS-Glimmer-0.2.0.iso`. Every download is SHA-256 checked. The first build takes a while; later builds are quick.
 
-## Test in QEMU
+### Testing in QEMU
 
 ```sh
-make run           # live ISO, BIOS
-make run-uefi      # live ISO, UEFI
-make run-install   # ISO + 8 GB virtual disk, to try shiny-install
-make run-disk      # boot the virtual disk after installing
+make run            # live mode, BIOS
+make run-uefi       # live mode, UEFI
+make run-install    # live + a 20 GB virtual disk, to try the installer
+make run-disk       # boot the installed virtual disk
 ```
 
-## Project structure
+For KDE, give the VM more memory: `make run-disk QEMU_MEM=2G`.
+
+### Project layout
 
 ```text
-configs/       - kernel and BusyBox configs (+ ShinyOS fragments)
-kernel/        - Linux kernel build
-busybox/       - BusyBox build (static, musl)
-userland/      - ShinyOS programs (shinyfetch, shiny-install)
-rootfs/        - system files (/etc, rc.d, scripts)
-initramfs/     - boot /init (live mode and installed system)
-iso/           - GRUB and ISO generation
-scripts/       - build scripts
-build/         - generated files
+configs/      kernel and BusyBox configs (+ ShinyOS fragments)
+kernel/       Linux kernel build
+busybox/      BusyBox build (static, musl)
+ports/        sudo, wpa_supplicant (+OpenSSL, libnl), e2fsprogs and firmware
+userland/     ShinyOS programs: shinyfetch, shiny-install, shiny-efiboot
+rootfs/       system files: /etc, rc.d, menus, Nix and desktop setup
+initramfs/    the boot /init (live mode and installed system)
+iso/          GRUB and ISO generation
+scripts/      build helper scripts
 ```
 
 ## Roadmap
 
-1. ✅ Usable, installable terminal system (UEFI and BIOS)
-2. ✅ Package manager (`pkg`, on top of Nix)
-3. ✅ Wi-Fi and sudo
-4. ✅ KDE Plasma (via Nix)
-5. Graphical login screen, Bluetooth, eduroam from the menu
-6. ShinyOS's own skeuomorphic theme
+- [x] Installable terminal system (UEFI and BIOS)
+- [x] Package manager (`pkg`, on top of Nix)
+- [x] Wi-Fi and sudo
+- [x] KDE Plasma 6
+- [ ] Testing on real hardware
+- [ ] Graphical login screen
+- [ ] Bluetooth and eduroam from the menu
+- [ ] NVIDIA driver
+- [ ] ShinyOS's own skeuomorphic theme
 
 ## License
 
-ShinyOS is licensed under the GNU General Public License v3.0 (GPLv3).
+ShinyOS is free software under the [GNU GPL v3.0](LICENSE).
 
-## Third-party software
+Third-party software included or downloaded:
 
-- Linux kernel (GPLv2)
-- BusyBox (GPLv2)
+- Linux and BusyBox (GPLv2)
 - GRUB (GPLv3)
-- musl libc (MIT)
+- musl (MIT)
 - Nix (LGPL-2.1)
-- sudo (ISC), wpa_supplicant (BSD), OpenSSL (Apache-2.0), libnl (LGPL-2.1)
-- linux-firmware (various licenses, see WHENCE)
-- KDE Plasma and applications (GPL/LGPL, downloaded from nixpkgs)
+- sudo (ISC)
+- wpa_supplicant (BSD)
+- OpenSSL (Apache-2.0)
+- libnl (LGPL-2.1)
+- e2fsprogs (GPLv2)
+- linux-firmware (various licenses; see `WHENCE`)
+- KDE Plasma and apps (GPL/LGPL, from nixpkgs)
